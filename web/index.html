@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>Family Cloud</title>
+
+<!-- iPad 全屏：必须齐这几行，Safari 才能"添加到主屏幕"后变成无地址栏的 App -->
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover,user-scalable=no,maximum-scale=1">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Fcloud">
+<meta name="format-detection" content="telephone=no">
+<meta name="theme-color" content="#F6F3EE">
+<link rel="manifest" href="/manifest.webmanifest">
+<link rel="apple-touch-icon" href="/icons/icon-180.png">
+<link rel="icon" href="/icons/icon-192.png">
+<link rel="stylesheet" href="/style.css">
+</head>
+<body>
+
+<!-- ══════════════ 启动 / 登录 ══════════════ -->
+<section id="gate" class="gate">
+  <div class="gate__card">
+    <div class="brand">
+      <div class="brand__mark" aria-hidden="true">
+        <svg viewBox="0 0 48 48" fill="none" stroke="currentColor" stroke-width="2.6"
+             stroke-linecap="round" stroke-linejoin="round">
+          <path d="M10 18a6 6 0 0 1 6-6h6l4 4h12a6 6 0 0 1 6 6v14a6 6 0 0 1-6 6H16a6 6 0 0 1-6-6z"/>
+          <path d="M20 27l4 4 8-9"/>
+        </svg>
+      </div>
+      <h1 class="brand__name">Family Cloud</h1>
+      <p class="brand__sub" id="gateSub">一家人的文件都在这里</p>
+    </div>
+
+    <!-- 初始化表单 -->
+    <form id="setupForm" class="form" hidden>
+      <p class="form__lead">第一次使用，先建一个管理员账号。<br>以后可以在「成员」里添加爸爸、孩子。</p>
+      <!-- 这里原来硬写了 value="mama" / value="妈妈"，
+           两个后果：①换一家建号用户名也变「mama」；②Chrome 自动填充会画一块灰色高亮，
+           跟界面风格完全打架。改成 placeholder，值由用户自己填。 -->
+      <label class="field"><span>管理员用户名</span><input name="username" required autocomplete="username" placeholder="比如 mama"></label>
+      <label class="field"><span>显示名字</span><input name="display_name" required placeholder="比如 妈妈"></label>
+      <label class="field"><span>登录密码</span><input name="password" type="password" required minlength="4" autocomplete="new-password"></label>
+      <label class="field"><span>家庭空间名字</span><input name="space_name" value="我们一家"></label>
+      <button class="btn btn--primary btn--block" type="submit">创建家庭空间</button>
+    </form>
+
+    <!-- 登录表单 -->
+    <form id="loginForm" class="form" hidden>
+      <label class="field"><span>用户名</span><input name="username" required autocomplete="username" autocapitalize="off"></label>
+      <label class="field"><span>密码</span><input name="password" type="password" required autocomplete="current-password"></label>
+      <button class="btn btn--primary btn--block" type="submit">登录</button>
+      <p class="form__err" id="loginErr"></p>
+    </form>
+  </div>
+</section>
+
+<!-- ══════════════ 主界面 ══════════════ -->
+<div id="app" class="app" hidden>
+
+  <header class="topbar">
+    <button class="topbar__back" id="btnHome" hidden aria-label="返回">‹</button>
+    <div class="topbar__title">
+      <b id="crumbTitle">全部文件</b>
+      <span id="crumbPath"></span>
+    </div>
+    <div class="topbar__spacer"></div>
+    <button class="iconbtn" id="btnSearch" aria-label="搜索">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+           stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16.2 16.2 20.5 20.5"/></svg>
+    </button>
+    <button class="iconbtn" id="btnMore" aria-label="更多">
+      <svg viewBox="0 0 24 24" fill="currentColor"><circle cx="5" cy="12" r="2"/><circle cx="12" cy="12" r="2"/><circle cx="19" cy="12" r="2"/></svg>
+    </button>
+  </header>
+
+  <main class="main" id="main">
+
+    <!-- ── 文件浏览 ── -->
+    <section class="view" id="viewFiles">
+      <div class="crumbs" id="crumbs"></div>
+
+      <div class="quickbar" id="quickbar"></div>
+
+      <div class="dropzone" id="dropzone">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round">
+          <path d="M12 16V4M8 8l4-4 4 4"/><path d="M4 16v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/>
+        </svg>
+        <b>把文件拖到这里，或点击选择</b>
+        <span>支持分片上传，中断后可以接着传</span>
+      </div>
+      <input type="file" id="filePick" multiple hidden>
+
+      <div class="grid" id="grid"></div>
+      <div class="empty" id="emptyFiles" hidden>
+        <div class="empty__icon">📁</div>
+        <b>这里还是空的</b>
+        <span>点上面的方框上传第一批文件</span>
+      </div>
+    </section>
+
+    <!-- ── 搜索 ── -->
+    <section class="view" id="viewSearch" hidden>
+      <div class="searchbar">
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"
+             stroke-linecap="round"><circle cx="11" cy="11" r="6.5"/><path d="M16.2 16.2 20.5 20.5"/></svg>
+        <input id="q" placeholder="搜文件名，或文件里的内容…" autocomplete="off">
+        <button class="iconbtn iconbtn--sm" id="qClear" hidden>✕</button>
+      </div>
+
+      <div class="filters" id="filters">
+        <div class="chips" id="chipKind"></div>
+        <div class="chips" id="chipCat"></div>
+        <details class="filter-more">
+          <summary>更多筛选</summary>
+          <div class="filters__grid">
+            <label class="field"><span>大小至少</span><input id="fSizeMin" type="number" min="0" placeholder="字节"></label>
+            <label class="field"><span>大小至多</span><input id="fSizeMax" type="number" min="0" placeholder="字节"></label>
+            <label class="field"><span>上传者</span><select id="fUploader"></select></label>
+            <label class="field"><span>修改时间</span><select id="fAfter">
+              <option value="">不限</option><option value="1">今天</option>
+              <option value="7">最近一周</option><option value="30">最近一个月</option>
+              <option value="365">最近一年</option></select></label>
+            <label class="check"><input type="checkbox" id="fEnc"><span>只看加密文件</span></label>
+            <label class="check"><input type="checkbox" id="fStar"><span>只看收藏</span></label>
+          </div>
+        </details>
+      </div>
+
+      <div class="meta" id="searchMeta"></div>
+      <div class="grid grid--list" id="searchGrid"></div>
+      <div class="empty" id="emptySearch" hidden><div class="empty__icon">🔍</div><b>没找到</b><span>换个词试试</span></div>
+    </section>
+
+    <!-- ── 回收站 ── -->
+    <section class="view" id="viewTrash" hidden>
+      <div class="panel">
+        <p>删除的东西会在这里放 <b id="trashDays">30</b> 天。到期后自动清理。</p>
+        <button class="btn btn--danger" id="btnEmptyTrash">清空回收站</button>
+      </div>
+      <div class="grid grid--list" id="trashGrid"></div>
+      <div class="empty" id="emptyTrash" hidden><div class="empty__icon">🗑</div><b>回收站是空的</b><span>没有删掉的东西</span></div>
+    </section>
+
+    <!-- ── 成员 ── -->
+    <section class="view" id="viewMembers" hidden>
+      <div class="panel" id="memberForm" hidden>
+        <h3>添加成员</h3>
+        <div class="filters__grid">
+          <label class="field"><span>用户名</span><input id="mUser"></label>
+          <label class="field"><span>显示名字</span><input id="mName"></label>
+          <label class="field"><span>密码</span><input id="mPass" type="password"></label>
+          <label class="field"><span>角色</span><select id="mRole">
+            <option value="child">儿童</option>
+            <option value="adult">成人</option>
+            <option value="admin">管理员</option>
+          </select></label>
+        </div>
+        <button class="btn btn--primary" id="btnAddMember">添加</button>
+      </div>
+      <div class="grid grid--list" id="memberGrid"></div>
+    </section>
+
+    <!-- ── 统计与设置 ── -->
+    <section class="view" id="viewSettings" hidden>
+      <div class="cards">
+        <div class="statcard">
+          <b id="stLogical">—</b><span>文件总大小</span>
+        </div>
+        <div class="statcard">
+          <b id="stPhysical">—</b><span>实际占用</span>
+        </div>
+        <div class="statcard statcard--good">
+          <b id="stSaved">—</b><span>去重省下</span>
+        </div>
+      </div>
+      <div class="panel" id="dedupBar"></div>
+
+      <div class="panel">
+        <h3>按分类</h3>
+        <div class="bars" id="catBars"></div>
+      </div>
+
+      <div class="panel">
+        <h3>按成员</h3>
+        <div class="bars" id="memberBars"></div>
+      </div>
+
+      <div class="panel">
+        <h3>重要文件加密</h3>
+        <div id="cryptoBox"></div>
+      </div>
+
+      <div class="panel">
+        <h3>备份</h3>
+        <div class="row">
+          <button class="btn" id="btnBackup">立刻备份</button>
+          <button class="btn btn--ghost" id="btnGc">垃圾回收</button>
+        </div>
+        <div id="backupList" class="mini-list"></div>
+      </div>
+
+      <div class="panel">
+        <h3>家庭空间</h3>
+        <label class="field"><span>空间名称</span><input id="spaceName"></label>
+        <label class="field"><span>容量上限（GB，0 表示不限）</span><input id="spaceQuota" type="number" min="0" step="0.5"></label>
+        <button class="btn" id="btnSaveSpace">保存</button>
+      </div>
+
+      <div class="panel">
+        <h3>小f 智能助手</h3>
+        <div id="aiBox"></div>
+      </div>
+
+      <div class="panel">
+        <h3>操作记录</h3>
+        <div class="mini-list" id="auditList"></div>
+      </div>
+    </section>
+
+  </main>
+
+  <!-- 底部标签栏 -->
+  <nav class="tabbar">
+    <button class="tab is-on" data-view="files">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2z"/></svg>
+      <span>文件</span>
+    </button>
+    <button class="tab" data-view="search">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round">
+        <circle cx="11" cy="11" r="6.5"/><path d="M16.2 16.2 20.5 20.5"/></svg>
+      <span>搜索</span>
+    </button>
+    <button class="tab" data-view="trash">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <path d="M4 7h16M9 7V5h6v2M6 7l1 13h10l1-13"/></svg>
+      <span>回收站</span>
+    </button>
+    <button class="tab" data-view="members">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="9" cy="8" r="3.2"/><path d="M3 20c0-3.3 2.7-5.5 6-5.5s6 2.2 6 5.5"/>
+        <path d="M17 8.5a2.8 2.8 0 0 1 0 5.4M18 20c0-2.2-.8-4-2-5.2"/></svg>
+      <span>成员</span>
+    </button>
+    <button class="tab" data-view="settings">
+      <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round">
+        <circle cx="12" cy="12" r="3"/>
+        <path d="M19.4 15a1.6 1.6 0 0 0 .3 1.8l.1.1a2 2 0 1 1-2.8 2.8l-.1-.1a1.6 1.6 0 0 0-1.8-.3 1.6 1.6 0 0 0-1 1.5V21a2 2 0 1 1-4 0v-.1a1.6 1.6 0 0 0-1-1.5 1.6 1.6 0 0 0-1.8.3l-.1.1a2 2 0 1 1-2.8-2.8l.1-.1a1.6 1.6 0 0 0 .3-1.8 1.6 1.6 0 0 0-1.5-1H3a2 2 0 1 1 0-4h.1a1.6 1.6 0 0 0 1.5-1 1.6 1.6 0 0 0-.3-1.8l-.1-.1a2 2 0 1 1 2.8-2.8l.1.1a1.6 1.6 0 0 0 1.8.3H9a1.6 1.6 0 0 0 1-1.5V3a2 2 0 1 1 4 0v.1a1.6 1.6 0 0 0 1 1.5 1.6 1.6 0 0 0 1.8-.3l.1-.1a2 2 0 1 1 2.8 2.8l-.1.1a1.6 1.6 0 0 0-.3 1.8V9a1.6 1.6 0 0 0 1.5 1H21a2 2 0 1 1 0 4h-.1a1.6 1.6 0 0 0-1.5 1z"/></svg>
+      <span>统计</span>
+    </button>
+  </nav>
+
+  <!-- 上传队列 -->
+  <div class="uploads" id="uploads" hidden></div>
+
+  <!-- 弹出层 -->
+  <div class="sheet" id="sheet" hidden>
+    <div class="sheet__scrim" id="sheetScrim"></div>
+    <div class="sheet__panel" id="sheetPanel"></div>
+  </div>
+
+  <div class="toast" id="toast"></div>
+</div>
+
+<script src="/app.js"></script>
+<script src="/ai.js"></script>
+</body>
+</html>

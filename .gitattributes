@@ -1,0 +1,9 @@
+# 一律用 LF —— Windows 上如果变成 CRLF，
+# Worker 部署时某些工具会出问题，而且 diff 会变得很乱。
+* text=auto eol=lf
+
+# 二进制文件不做换行转换
+*.png binary
+*.jpg binary
+*.ico binary
+*.db binary

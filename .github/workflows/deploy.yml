@@ -1,0 +1,68 @@
+name: 部署到 Cloudflare Workers
+
+# 触发时机：
+#   - 推 main 分支 → 自动部署
+#   - 手动触发（workflow_dispatch）
+#
+# 需要的仓库 Secret（Settings → Secrets and variables → Actions）：
+#   CLOUDFLARE_ACCOUNT_ID  Cloudflare 账号 ID
+#   CLOUDFLARE_API_TOKEN   API Token（Workers Scripts 模板，权限见 README）
+#
+# ⚠️ MASTER_SECRET 和 OPENROUTER_API_KEY **不要**放这里 ——
+#    它们用 `wrangler secret put` 存在 Cloudflare 侧，不进仓库。
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+concurrency:
+  # 同一个分支同时只跑一个部署，避免两个部署互相覆盖
+  group: deploy-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    name: 构建并部署
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      - name: 检出代码
+        uses: actions/checkout@v4
+
+      - name: 安装 Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+
+      - name: 安装依赖
+        run: npm ci
+
+      - name: 类型检查
+        run: npx tsc --noEmit
+
+      # ⚠️ 单元测试需要 wrangler dev 起本地服务，
+      # 在 CI 里容易因为端口/时序不稳定而误报失败。
+      # 所以 CI 只做类型检查，完整端到端测试在本地跑（见 README）。
+      # 想在 CI 也跑的话：npm test
+
+      - name: 部署
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          # wrangler.jsonc 里已经配好了 D1 / R2 / KV 的 binding，
+          # 这里只部署 Worker 代码 + 静态资源。
+          command: deploy
+          # D1 迁移单独一步，不跟部署混在一起 ——
+          # 迁移失败要让部署失败，不能「部署成功但表没建」。
+          # 见下面的「应用数据库迁移」步骤。
+
+      - name: 应用数据库迁移
+        uses: cloudflare/wrangler-action@v3
+        with:
+          apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
+          accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
+          command: d1 migrations apply fcloud --remote

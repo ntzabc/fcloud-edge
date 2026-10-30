@@ -1,0 +1,51 @@
+{
+  "$schema": "node_modules/wrangler/config-schema.json",
+  "name": "fcloud",
+  "main": "src/index.ts",
+  "compatibility_date": "2026-01-15",
+  "compatibility_flags": ["nodejs_compat"],
+
+  "assets": {
+    "directory": "./web",
+    "binding": "ASSETS",
+    "not_found_handling": "single-page-application"
+  },
+
+  "d1_databases": [
+    {
+      "binding": "DB",
+      "database_name": "fcloud",
+      "database_id": "00000000-0000-0000-0000-000000000000",
+      "migrations_dir": "migrations"
+    }
+  ],
+
+  "r2_buckets": [
+    {
+      "binding": "BLOB",
+      "bucket_name": "fcloud-blobs"
+    }
+  ],
+
+  "kv_namespaces": [
+    {
+      "binding": "RATE",
+      "id": "0000000000000000000000000000000f"
+    }
+  ],
+
+  "vars": {
+    "APP_NAME": "Family Cloud",
+    "SESSION_COOKIE": "fcloud_session",
+    "SESSION_TTL": "604800",
+    "CHUNK_SIZE": "4194304"
+  },
+
+  "triggers": {
+    "crons": ["0 4 * * *"]
+  },
+
+  "observability": {
+    "enabled": true
+  }
+}

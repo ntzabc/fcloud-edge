@@ -1,0 +1,25 @@
+# 依赖与构建产物
+node_modules/
+.wrangler/
+dist/
+
+# ⚠️ 本地开发用的 secret —— 绝不能提交！
+# 这里只是给 wrangler dev 本地跑用的假值。
+# 线上用：wrangler secret put MASTER_SECRET
+.dev.vars
+
+# 日志与临时文件
+_wrangler.log
+_dbg.log
+*.log
+
+# 临时调试脚本
+_dbg.py
+_migrate.sql
+_migrate_passwords.txt
+
+# 本地状态（SQLite 数据库等）
+data/
+*.db
+*.db-shm
+*.db-wal
