@@ -98,6 +98,23 @@ def write_conf_ids(d1_id, r2_name, kv_id):
     open(CONF, "w", encoding="utf-8", newline="").write(txt)
 
 
+def read_dev_vars(key):
+    """从本地 .dev.vars 读一个值（用来拿用户自己的 OpenRouter key）。
+
+    .dev.vars 是 wrangler dev 的本地 secret 文件，已经在 .gitignore 里。
+    """
+    p = os.path.join(HERE, ".dev.vars")
+    if not os.path.isfile(p):
+        return ""
+    for line in open(p, encoding="utf-8").read().split("\n"):
+        line = line.strip()
+        if not line or line.startswith("#"):
+            continue
+        if line.startswith(key + "="):
+            return line.split("=", 1)[1].strip().strip('"').strip("'")
+    return ""
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true", help="只看要做什么")
@@ -170,24 +187,46 @@ def main():
     else:
         print("  ⚠️ 没拿到 id，跳过（手动改 wrangler.jsonc）")
 
-    # ---- MASTER_SECRET ----
-    step("主密钥加密根 MASTER_SECRET")
+    # ---- Secret ----
+    # 用 `secret bulk` 而不是 `secret put` ——
+    # put 要交互式读 stdin，在脚本里喂不一定稳；bulk 直接读 JSON 文件，稳。
+    step("Secret（MASTER_SECRET / FCLOUD_AI_KEY）")
     rc, out = run(["secret", "list"], timeout=120, check=False)
-    if "MASTER_SECRET" in out:
-        print("  已存在，跳过（不覆盖 —— 覆盖了等于所有加密文件永久报废）")
-    elif dry:
-        print("  [会创建] MASTER_SECRET")
+    existing = out
+    have_master = "MASTER_SECRET" in existing
+    have_ai = "FCLOUD_AI_KEY" in existing
+
+    if dry:
+        print("  MASTER_SECRET：%s" % ("已存在" if have_master else "[会创建]"))
+        print("  FCLOUD_AI_KEY ：%s" % ("已存在" if have_ai else "[会创建（如果 .dev.vars 里有]）"))
     else:
-        import secrets
-        sec = secrets.token_urlsafe(48)
-        print("  ✓ 已生成并设置（不会打印出来）")
-        p = subprocess.run(
-            [NODE, WRANGLER, "secret", "put", "MASTER_SECRET"],
-            cwd=HERE, input=sec + "\n", capture_output=True, text=True,
-            encoding="utf-8", errors="replace", timeout=180)
-        if p.returncode != 0:
-            print("  ✗ 失败：", (p.stdout or "") + (p.stderr or "")[-600:])
-            sys.exit(1)
+        bulk = {}
+        if not have_master:
+            import secrets
+            bulk["MASTER_SECRET"] = secrets.token_urlsafe(48)
+            print("  ✓ 生成 MASTER_SECRET（不会打印出来）")
+        # OpenRouter 的 key：从本地 .dev.vars 拿（那里有用户自己的 key）
+        if not have_ai:
+            ai_key = read_dev_vars("FCLOUD_AI_KEY")
+            if ai_key:
+                bulk["FCLOUD_AI_KEY"] = ai_key
+                print("  ✓ 从 .dev.vars 读入 FCLOUD_AI_KEY")
+            else:
+                print("  ⚠️ 没找到 FCLOUD_AI_KEY —— 小f 上线后不可用，")
+                print("     可以在网页「设置」里填，或之后跑：")
+                print("     wrangler secret put FCLOUD_AI_KEY")
+        if bulk:
+            tmp = os.path.join(HERE, "_secrets.json")
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(bulk, f)
+                run(["secret", "bulk", tmp], timeout=300)
+                print("  ✓ 已设置：%s" % "、".join(bulk.keys()))
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+        else:
+            print("  已全部存在，跳过（不覆盖 —— 覆盖 MASTER_SECRET 等于加密文件永久报废）")
 
     # ---- 迁移 ----
     step("数据库迁移")
