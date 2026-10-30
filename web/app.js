@@ -938,7 +938,7 @@ async function renderAISettings() {
     <button class="btn" id="aiSaveModel"${canKey ? '' : ' disabled'}>保存模型</button>
     ${canKey ? `
     <label class="field" style="margin-top:12px"><span>OpenRouter API Key</span>
-      <input id="aiKey" type="password" placeholder="sk-or-v1-…"></label>
+      <input id="aiKey" type="password" placeholder="sk-…"></label>
     <div class="row">
       <button class="btn btn--primary" id="aiSaveKey">保存 Key</button>
       <button class="btn btn--ghost" id="aiResetKey">恢复内置</button>
