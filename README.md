@@ -140,6 +140,19 @@ node node_modules/wrangler/bin/wrangler.js secret put MASTER_SECRET
 
 ### 一、一次性准备
 
+**最省事的做法 —— 跑这个脚本，全自动：**
+
+```bash
+node node_modules/wrangler/bin/wrangler.js login   # 先登录（会开浏览器）
+python setup_cloudflare.py                          # 建资源 + 设 secret + 建表 + 部署
+python setup_cloudflare.py --dry                    # 先看它要做什么
+```
+
+脚本会：建 D1 / R2 / KV → 把 id 写回 `wrangler.jsonc` → 生成并设置
+`MASTER_SECRET` → 应用两个迁移 → 部署 → 打印网址。
+
+**手动做的话**：
+
 ```bash
 # 1. 登录（会开浏览器，用 GitHub 账号授权最省事）
 node node_modules/wrangler/bin/wrangler.js login
@@ -184,6 +197,9 @@ API Token 的权限（Cloudflare 控制台 → My Profile → API Tokens → Cre
 
 **不要**把 `MASTER_SECRET` 放进 GitHub Secret —— 它用 `wrangler secret put` 存在
 Cloudflare 侧，不进仓库、不进 CI 日志。
+
+**OpenRouter 的 API Key 也不在源码里**（公开仓库 + GitHub secret scanning 会拦）。
+两个来源：设置界面里填（存 D1），或 `wrangler secret put FCLOUD_AI_KEY`。
 
 > 另一条路：Cloudflare 控制台 → Workers → fcloud → Settings → Builds →
 > Connect repository。效果一样，二选一即可。
