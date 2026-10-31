@@ -54,14 +54,56 @@ def step(msg):
 
 
 def whoami():
+    """检查登录状态。
+
+    ## 两条路
+
+    **A. API Token（推荐）**
+    设了环境变量 `CLOUDFLARE_API_TOKEN` 就用它 —— wrangler 会自动识别，
+    不走 OAuth，不会超时。而且这个 token 正好也是 GitHub Actions 要的那个，
+    一次配置两处用。
+
+    **B. OAuth（`wrangler login`）**
+    浏览器授权，但**只有 30 秒左右的窗口**：
+    终端起一个本地服务器等回调，超时就报
+    "Timed out waiting for authorization code"。
+    所以要么手快，要么先在浏览器里登录好 Cloudflare（授权页就只剩点一下）。
+    """
+    # 路线 A：有 API Token 就直接过
+    if os.environ.get("CLOUDFLARE_API_TOKEN"):
+        print("  检测到环境变量 CLOUDFLARE_API_TOKEN，用它（不走 OAuth，不会超时）")
+        return ""
+
+    # 路线 B：OAuth
     rc, out = run(["whoami"], timeout=60, check=False)
     clean = re.sub(r"\x1b\[[0-9;]*m", "", out)
     # ⚠️ wrangler 未登录时**退出码还是 0**，只打印一句 "You are not authenticated"。
     # 所以不能只看返回码 —— 必须看输出内容。
     if rc != 0 or "not authenticated" in clean.lower():
-        print("还没登录 Cloudflare。先跑：")
-        print("  node node_modules/wrangler/bin/wrangler.js login")
-        print("（会开浏览器，用 GitHub 账号授权最省事）")
+        print()
+        print("  ✗ 还没登录 Cloudflare。两条路，选一条：")
+        print()
+        print("  【A】用 API Token（推荐，不会超时，而且 GitHub Actions 也要它）")
+        print("     1. 打开 https://dash.cloudflare.com/profile/api-tokens")
+        print("     2. 点 Create Token → Create Custom Token")
+        print("     3. 按下面勾权限：")
+        print("         Account / Workers Scripts      → Edit")
+        print("         Account / D1                    → Edit")
+        print("         Account / Workers R2 Storage   → Edit")
+        print("         Account / Workers KV Storage   → Edit")
+        print("         Account / Account Settings     → Read")
+        print("     4. 点 Create Token → 复制那串字符")
+        print("     5. 在**新开的**终端窗口里执行：")
+        print('         setx CLOUDFLARE_API_TOKEN "粘贴你的token"')
+        print('         setx CLOUDFLARE_ACCOUNT_ID "你的Account ID"')
+        print("        （Account ID 在控制台右侧的 API Tokens 页面上能看到）")
+        print()
+        print("  【B】用浏览器登录（OAuth，只有 ~30 秒窗口）")
+        print("     1. 先在浏览器里登录 https://dash.cloudflare.com 并保持登录状态")
+        print("     2. 再跑（--browser=false 会让你自己复制链接，手快一点）：")
+        print('         node "C:\\Users\\kaixi\\WorkBuddy\\2026-09-18-16-15-04\\FcloudEdge\\node_modules\\wrangler\\bin\\wrangler.js" login --browser=false')
+        print("     3. 授权页上点**红色**的 Allow 按钮")
+        print()
         sys.exit(1)
     for line in clean.split("\n"):
         if "Account ID" in line or "Account Name" in line:
