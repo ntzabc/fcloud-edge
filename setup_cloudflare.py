@@ -115,6 +115,61 @@ def read_dev_vars(key):
     return ""
 
 
+def parse_wrangler_json(out):
+    """从 wrangler 输出里抽 JSON 数组。
+
+    ⚠️ 两个坑（都踩过）：
+    1. 前面有 `▲ [WARNING] The version of Wrangler ...` 的 `[`，
+       不能用 out.find("[") 找开头。
+    2. JSON 后面还跟着日志，且带 ANSI 颜色码 \\x1b[...，
+       所以不能用 json.loads（它要求整串都是 JSON），要用 raw_decode。
+    """
+    import json
+    clean = re.sub(r"\x1b\[[0-9;]*m", "", out)
+    dec = json.JSONDecoder()
+    pos = 0
+    while True:
+        i = clean.find("[", pos)
+        if i < 0:
+            return []
+        try:
+            data, _end = dec.raw_decode(clean[i:])
+        except Exception:
+            pos = i + 1
+            continue
+        if isinstance(data, list):
+            return data
+        pos = i + 1
+
+
+def find_by_name(items, name, name_keys, id_keys):
+    """在 wrangler 列出的资源里按名字找 id。
+
+    ⚠️ 绝对不能取「列表里的第一个」——
+    账号里要是还有别的项目建的同名类型资源，就会拿到错的 id，
+    然后写进 wrangler.jsonc，部署到错误的数据库/桶。
+
+    ⚠️ 不同命令的字段名不一样，而且 wrangler 升级也可能改：
+      d1 list --json  → { database_name, database_id }
+      kv namespace list → { title, value }
+    所以这里用**候选字段名列表**，谁先命中用谁。
+    """
+    if isinstance(name_keys, str):
+        name_keys = [name_keys]
+    if isinstance(id_keys, str):
+        id_keys = [id_keys]
+    for it in items:
+        if not isinstance(it, dict):
+            continue
+        for nk in name_keys:
+            if it.get(nk) == name:
+                for ik in id_keys:
+                    v = it.get(ik)
+                    if v:
+                        return v
+    return None
+
+
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--dry", action="store_true", help="只看要做什么")
@@ -135,25 +190,42 @@ def main():
 
     # ---- D1 ----
     step("D1 数据库")
-    rc, out = run(["d1", "list"], timeout=120, check=False)
-    d1_id = None
-    for m in re.finditer(r'"database_id"\s*:\s*"([^"]+)"', out):
-        d1_id = m.group(1)
-        break
-    if d1_id and d1_id != "00000000-0000-0000-0000-000000000000":
-        print("  已存在，跳过")
-    elif dry:
-        print("  [会创建] %s" % d1_name)
+    # ⚠️ 优先读本地 wrangler.jsonc 里已经填好的 id ——
+    # 用户手动改过配置的话，根本不需要去 list（省一次 API 调用，也少一个出错点）。
+    cur_d1 = conf["d1_databases"][0].get("database_id", "")
+    PLACEHOLDER = "00000000-0000-0000-0000-000000000000"
+    if cur_d1 and cur_d1 != PLACEHOLDER:
+        d1_id = cur_d1
+        print("  配置里已有 id，跳过查询（%s）" % d1_id)
     else:
-        rc, out = run(["d1", "create", d1_name], timeout=180)
-        m = re.search(r'"database_id"\s*:\s*"([^"]+)"', out)
-        d1_id = m.group(1) if m else None
-        print("  ✓ 创建完成 id=%s" % d1_id)
+        rc, out = run(["d1", "list", "--json"], timeout=120, check=False)
+        # 按**名字**找，不能取列表里的第一个
+        d1_id = find_by_name(
+            parse_wrangler_json(out), d1_name,
+            ["database_name", "name"], ["database_id", "uuid", "id"])
+        if d1_id:
+            print("  已存在，跳过（%s）" % d1_id)
+        elif dry:
+            print("  [会创建] %s" % d1_name)
+        else:
+            rc, out = run(["d1", "create", d1_name], timeout=180)
+            d1_id = find_by_name(
+                parse_wrangler_json(out), d1_name,
+                ["database_name", "name"], ["database_id", "uuid", "id"])
+            if not d1_id:
+                m = re.search(r'"database_id"\s*:\s*"([^"]+)"', out)
+                d1_id = m.group(1) if m else None
+            if not d1_id:
+                print("  ✗ 创建失败：", out[-600:])
+                sys.exit(1)
+            print("  ✓ 创建完成 id=%s" % d1_id)
 
     # ---- R2 ----
     step("R2 存储桶")
     rc, out = run(["r2", "bucket", "list"], timeout=120, check=False)
-    if r2_name in out:
+    # 桶名是配置里写死的字符串，用「包含」判断安全
+    # （不像 id 那样会拿错 —— 桶名唯一）
+    if r2_name in re.sub(r"\x1b\[[0-9;]*m", "", out):
         print("  已存在，跳过")
     elif dry:
         print("  [会创建] %s" % r2_name)
@@ -163,19 +235,39 @@ def main():
 
     # ---- KV ----
     step("KV 命名空间（限流用）")
-    rc, out = run(["kv", "namespace", "list"], timeout=120, check=False)
-    kv_id = None
-    m = re.search(r'"id"\s*:\s*"([^"]+)"', out)
-    if m and m.group(1) != "00000000-0000-0000-0000-000000000000":
-        kv_id = m.group(1)
-        print("  已存在，跳过")
-    elif dry:
-        print("  [会创建] binding=%s" % kv_binding)
+    cur_kv = conf["kv_namespaces"][0].get("id", "")
+    if cur_kv and cur_kv != "0000000000000000000000000000000f":
+        kv_id = cur_kv
+        print("  配置里已有 id，跳过查询（%s）" % kv_id)
     else:
-        rc, out = run(["kv", "namespace", "create", kv_binding], timeout=180)
-        m = re.search(r'"id"\s*:\s*"([^"]+)"', out)
-        kv_id = m.group(1) if m else None
-        print("  ✓ 创建完成 id=%s" % kv_id)
+        rc, out = run(["kv", "namespace", "list"], timeout=120, check=False)
+        kv_items = parse_wrangler_json(out)
+        # KV 列表的字段是 title（= binding 名）+ value（= id）
+        kv_id = find_by_name(kv_items, kv_binding, ["title", "name"], ["value", "id"])
+        if not kv_id:
+            # 老版本 wrangler 输出格式不一样，退而求其次找非占位符的
+            for it in kv_items:
+                if isinstance(it, dict):
+                    v = it.get("value") or it.get("id")
+                    if v and v != PLACEHOLDER and v != "0000000000000000000000000000000f":
+                        kv_id = v
+                        break
+        if kv_id:
+            print("  已存在，跳过（%s）" % kv_id)
+        elif dry:
+            print("  [会创建] binding=%s" % kv_binding)
+        else:
+            rc, out = run(["kv", "namespace", "create", kv_binding], timeout=180)
+            kv_id = find_by_name(
+                parse_wrangler_json(out), kv_binding,
+                ["title", "name"], ["value", "id"])
+            if not kv_id:
+                m = re.search(r'"id"\s*:\s*"([^"]+)"', out)
+                kv_id = m.group(1) if m else None
+            if not kv_id:
+                print("  ✗ 创建失败：", out[-600:])
+                sys.exit(1)
+            print("  ✓ 创建完成 id=%s" % kv_id)
 
     # ---- 写回配置 ----
     step("更新 wrangler.jsonc")
