@@ -227,7 +227,8 @@ def main():
 
     conf = read_conf()
     d1_name = conf["d1_databases"][0]["database_name"]
-    r2_name = conf["r2_buckets"][0]["bucket_name"]
+    # r2_buckets 可能被注释掉了（账号没订阅 R2 时）—— 要容错
+    r2_name = (conf.get("r2_buckets") or [{}])[0].get("bucket_name", "fcloud-blobs")
     kv_binding = conf["kv_namespaces"][0]["binding"]
 
     # ---- D1 ----
@@ -272,8 +273,26 @@ def main():
     elif dry:
         print("  [会创建] %s" % r2_name)
     else:
-        run(["r2", "bucket", "create", r2_name], timeout=180)
-        print("  ✓ 创建完成")
+        rc, out = run(["r2", "bucket", "create", r2_name], timeout=180, check=False)
+        if rc == 0:
+            print("  ✓ 创建完成")
+        else:
+            # ⚠️ 错误 10042 = 账号没订阅 R2 这个产品（不是权限问题）。
+            # 这必须用户自己去 Dashboard 点一下启用，脚本无能为力。
+            # 所以：**不中断**，继续把能做的做完（迁移 + 部署）。
+            print("  ✗ 创建失败 —— 需要你手动启用 R2")
+            print()
+            print("     R2 必须在这个页面手动激活一次：")
+            print("     https://dash.cloudflare.com → 左侧 Workers & Pages → R2")
+            print("     → 点「Enable R2」或「Purchase R2」")
+            print()
+            print("     注意：Cloudflare 会要求添加支付方式（信用卡或 PayPal），")
+            print("     但**免费额度内不会扣费**（10GB 存储 + 出口流量免费）。")
+            print()
+            print("     这一步不影响其他部分 —— 站点照样能部署上去，")
+            print("     只是「上传/下载文件」会失败。")
+            print("     部署完再回来启用，然后重新跑一次本脚本即可补上。")
+            print()
 
     # ---- KV ----
     step("KV 命名空间（限流用）")
@@ -299,17 +318,21 @@ def main():
         elif dry:
             print("  [会创建] binding=%s" % kv_binding)
         else:
-            rc, out = run(["kv", "namespace", "create", kv_binding], timeout=180)
+            rc, out = run(["kv", "namespace", "create", kv_binding], timeout=180, check=False)
             kv_id = find_by_name(
                 parse_wrangler_json(out), kv_binding,
                 ["title", "name"], ["value", "id"])
             if not kv_id:
                 m = re.search(r'"id"\s*:\s*"([^"]+)"', out)
                 kv_id = m.group(1) if m else None
-            if not kv_id:
-                print("  ✗ 创建失败：", out[-600:])
-                sys.exit(1)
-            print("  ✓ 创建完成 id=%s" % kv_id)
+            if kv_id:
+                print("  ✓ 创建完成 id=%s" % kv_id)
+            else:
+                # KV 也可能遇到「产品未订阅」类问题 —— 不中断，继续做别的
+                print("  ✗ 创建失败 ——", out[-400:])
+                print("     KV 只用于限流计数，没有它功能也正常（只是没限流）。")
+                print("     可以之后手动补：")
+                print('       wrangler kv namespace create %s' % kv_binding)
 
     # ---- 写回配置 ----
     step("更新 wrangler.jsonc")
@@ -362,6 +385,41 @@ def main():
         else:
             print("  已全部存在，跳过（不覆盖 —— 覆盖 MASTER_SECRET 等于加密文件永久报废）")
 
+    # ---- Pages 的 secret（跟 Worker 的是两套！）----
+    step("Pages Secret")
+    rc, out = run(["pages", "secret", "list", "--project-name=fcloud"], timeout=120, check=False)
+    have_master = "MASTER_SECRET" in out
+    have_ai = "FCLOUD_AI_KEY" in out
+    if dry:
+        print("  MASTER_SECRET：%s" % ("已存在" if have_master else "[会创建]"))
+        print("  FCLOUD_AI_KEY ：%s" % ("已存在" if have_ai else "[会创建]"))
+    else:
+        bulk = {}
+        if not have_master:
+            import secrets
+            bulk["MASTER_SECRET"] = secrets.token_urlsafe(48)
+            print("  ✓ 生成 MASTER_SECRET（不会打印出来）")
+        if not have_ai:
+            ai_key = read_dev_vars("FCLOUD_AI_KEY")
+            if ai_key:
+                bulk["FCLOUD_AI_KEY"] = ai_key
+                print("  ✓ 从 .dev.vars 读入 FCLOUD_AI_KEY")
+            else:
+                print("  ⚠️ 没找到 FCLOUD_AI_KEY —— 小f 上线后不可用，")
+                print("     可以在网页「设置」里填")
+        if bulk:
+            tmp = os.path.join(HERE, "_secrets.json")
+            try:
+                with open(tmp, "w", encoding="utf-8") as f:
+                    json.dump(bulk, f)
+                run(["pages", "secret", "bulk", tmp, "--project-name=fcloud"], timeout=300)
+                print("  ✓ 已设置：%s" % "、".join(bulk.keys()))
+            finally:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+        else:
+            print("  已全部存在，跳过（不覆盖 MASTER_SECRET —— 换了加密文件就报废了）")
+
     # ---- 迁移 ----
     step("数据库迁移")
     if dry:
@@ -372,28 +430,50 @@ def main():
                 timeout=300)
             print("  ✓ %s" % mig)
 
-    # ---- 部署 ----
+    # ---- Pages 项目 ----
+    step("Pages 项目")
+    rc, out = run(["pages", "project", "list"], timeout=120, check=False)
+    if "fcloud" in out:
+        print("  已存在，跳过")
+    elif dry:
+        print("  [会创建] fcloud")
+    else:
+        run(["pages", "project", "create", "fcloud", "--production-branch", "main"],
+            timeout=180)
+        print("  ✓ 创建完成")
+
+    # ---- 部署（Pages）----
     step("部署")
     if dry:
-        print("  [会执行] wrangler deploy")
+        print("  [会执行] wrangler pages deploy web --project-name=fcloud")
     else:
-        rc, out = run(["deploy"], timeout=600)
-        url = ""
-        m = re.search(r"(https://[a-z0-9.-]+\.workers\.dev)", out)
+        # ⚠️ 必须清掉 Pages 的构建缓存 —— 它不跟踪 src/ 的变化，
+        #    改了 src/crypto.ts 但缓存没清，部署上去的还是旧代码！
+        #    （这个坑让我排查了很久：代码明明改了，线上报的还是旧错误。）
+        cache = os.path.join(HERE, ".wrangler", "tmp")
+        for d in os.listdir(cache) if os.path.isdir(cache) else []:
+            if d.startswith("pages-"):
+                import shutil
+                shutil.rmtree(os.path.join(cache, d), ignore_errors=True)
+        rc, out = run(["pages", "deploy", "web", "--project-name=fcloud"], timeout=600)
+        url = "https://fcloud.pages.dev"
+        m = re.search(r"(https://[a-z0-9.-]+\.pages\.dev)", out)
         if m:
             url = m.group(1)
         print("  ✓ 部署完成")
-        if url:
-            print()
-            print("  网址： " + url)
-            print()
-            print("  下一步：")
-            print("    1. 在浏览器打开上面的网址")
-            print("    2. 建管理员账号（只有一次机会）")
-            print("    3. iPad 的 Safari 打开 → 分享 → 添加到主屏幕")
-            print()
-            print("  ⚠️ MASTER_SECRET 请自己备份一份 —— 丢了所有加密文件永久无法解开")
-            print("     wrangler secret list 可以确认它存在，但看不到内容")
+        print()
+        print("  网址： " + url)
+        print()
+        print("  下一步：")
+        print("    1. 在浏览器打开上面的网址")
+        print("    2. 建管理员账号（只有一次机会）")
+        print("    3. iPad 的 Safari 打开 → 分享 → 添加到主屏幕")
+        print()
+        print("  ⚠️ MASTER_SECRET 请自己备份一份 —— 丢了所有加密文件永久无法解开")
+        print("     wrangler pages secret list 可以确认它存在，但看不到内容")
+        print()
+        print("  ⚠️ workers.dev 在国内被 DNS 污染，所以主站用 pages.dev。")
+        print("     想用自定义域名的话，在 Pages 项目里绑一个 —— 更快更稳。")
 
     print()
     print("=" * 56)

@@ -22,6 +22,7 @@
 import { ApiError, type Env, type MasterLike } from "./types";
 import { chunkSalt, decryptChunk, b64d, equalBytes } from "./crypto";
 import { queryAll, queryOne, execute } from "./db";
+import { needBlob } from "./storage";
 
 /** GCM 标签长度。Python 版 crypto_box.TAG_LEN = 16。 */
 const TAG_LEN = 16;
@@ -134,10 +135,11 @@ export async function cryptoFor(
 
 /** 读一个块的原始字节（可能是密文）。 */
 export async function readRaw(env: Env, blobId: number): Promise<Uint8Array> {
+  const blob = needBlob(env);
   const row = await queryOne<{ hash: string }>(
     env.DB, "SELECT hash FROM blobs WHERE id=?", blobId);
   if (!row) throw new ApiError(`内容块 ${blobId} 不存在`, 500);
-  const obj = await env.BLOB.get(hashKey(row.hash));
+  const obj = await blob.get(hashKey(row.hash));
   if (!obj) throw new ApiError(`内容块 ${blobId} 的数据缺失`, 500);
   return new Uint8Array(await obj.arrayBuffer());
 }
@@ -214,6 +216,7 @@ export async function versionSize(env: Env, versionId: number): Promise<number> 
 export async function verifyVersion(
   env: Env, versionId: number,
 ): Promise<{ chunks: number; size: number; missing: number[]; ok: boolean }> {
+  const blob = needBlob(env);
   const rows = await queryAll<{ seq: number; blob_id: number; size: number }>(
     env.DB, "SELECT seq, blob_id, size FROM version_chunks WHERE version_id=? ORDER BY seq",
     versionId);
@@ -224,7 +227,7 @@ export async function verifyVersion(
     const row = await queryOne<{ hash: string }>(
       env.DB, "SELECT hash FROM blobs WHERE id=?", r.blob_id);
     if (!row) { missing.push(r.blob_id); continue; }
-    const obj = await env.BLOB.head(hashKey(row.hash));
+    const obj = await blob.head(hashKey(row.hash));
     if (!obj) missing.push(r.blob_id);
   }
   return { chunks: rows.length, size, missing, ok: missing.length === 0 };

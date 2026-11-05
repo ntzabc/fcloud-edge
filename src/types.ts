@@ -2,7 +2,14 @@
 
 export interface Env {
   DB: D1Database;
-  BLOB: R2Bucket;
+  /**
+   * R2 桶绑定。
+   *
+   * 标成可选是因为**账号没订阅 R2 时这个 binding 根本不存在** ——
+   * 此时部署会因为「bucket not found」直接失败，所以只能用不带 R2 的配置部署，
+   * 代码里也要能优雅降级（给用户明确提示，而不是 500 崩溃）。
+   */
+  BLOB?: R2Bucket;
   RATE: KVNamespace;
   ASSETS: Fetcher;
   APP_NAME: string;

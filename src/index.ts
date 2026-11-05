@@ -1,14 +1,30 @@
 /**
- * Worker 入口。
+ * 入口 —— 同一套业务逻辑，两个宿主。
  *
- * 路由策略：
+ * ## 为什么有两个入口
+ *
+ * ### Workers（`*.workers.dev`）
+ *   原计划的主方案。但 **workers.dev 在国内被 DNS 污染** ——
+ *   域名会被解析到 Facebook 的 IP（31.13.x.x），根本连不上。
+ *   实测：`fcloud.fcloud-kaixin.workers.dev` → 31.13.86.21（Facebook）。
+ *
+ *   现在只用来挂 **cron 定时任务**（回收站清理、内容块 GC）——
+ *   cron 是 Cloudflare 内部触发的，不经过公网 DNS，所以不受影响。
+ *   而且定时任务不需要对外暴露网址。
+ *
+ * ### Pages（`*.pages.dev`）
+ *   真正给用户用的。**pages.dev 没有被污染**（实测解析到 104.18.x.x，
+ *   Cloudflare 自己的 IP），国内能正常访问。
+ *
+ *   静态资源由 Pages 直接托管（不过函数，不计函数调用配额），
+ *   `/api/*` 走 Pages Function → 这里的同一套路由逻辑。
+ *
+ * ## 路由策略
+ *
  *   /api/*        → 业务 API（自己处理）
- *   其余          → 静态资源，走 ASSETS binding（Cloudflare 边缘缓存，不计 Workers 请求配额）
- *
- * 为什么静态资源走 ASSETS 而不是 Worker 里读文件：
- *   Workers 免费版 10 万请求/天，静态资源请求**不计入**这个配额
- *   （只有 Pages Functions 才计）。走 ASSETS binding 由 Cloudflare 的
- *   静态资源层直接服务，图片、JS、CSS 都不过 Worker。
+ *   其余          → 静态资源
+ *     · Pages 宿主：Pages 的静态资源层直接服务（不过函数）
+ *     · Worker 宿主：走 ASSETS binding（也是边缘缓存，不计 Worker 请求配额）
  */
 
 import { ApiError, type Env } from "./types";
@@ -19,31 +35,15 @@ export default {
     const url = new URL(request.url);
 
     if (url.pathname.startsWith("/api/")) {
-      try {
-        const res = await route(request, env, ctx, url);
-        // HSTS 统一在这里加（json() 里加不了，它不知道是不是 https）
-        for (const [k, v] of Object.entries(hstsHeader(url))) {
-          res.headers.set(k, v);
-        }
-        return res;
-      } catch (e) {
-        if (e instanceof ApiError) {
-          return json({ error: e.message }, e.status);
-        }
-        console.error("未处理的异常:", e);
-        return json({ error: "服务器内部错误" }, 500);
-      }
+      return await handleApi(request, env, ctx, url);
     }
 
     // 静态资源
-    const res = await env.ASSETS.fetch(request);
-    for (const [k, v] of Object.entries(hstsHeader(url))) {
-      res.headers.set(k, v);
+    if (!env.ASSETS) {
+      return new Response("静态资源还没配置", { status: 503 });
     }
-    // 静态资源也要有防嗅探和防嵌套
-    res.headers.set("X-Content-Type-Options", "nosniff");
-    res.headers.set("X-Frame-Options", "DENY");
-    res.headers.set("Referrer-Policy", "no-referrer");
+    const res = await env.ASSETS.fetch(request);
+    applySecurityHeaders(res, url);
     return res;
   },
 
@@ -52,6 +52,38 @@ export default {
     ctx.waitUntil(runCron(env));
   },
 };
+
+/**
+ * 处理 /api/* 请求。
+ *
+ * 抽出来是为了让 Worker 和 Pages 两个宿主共用同一套逻辑。
+ */
+export async function handleApi(
+  request: Request, env: Env, ctx: ExecutionContext, url: URL,
+): Promise<Response> {
+  try {
+    const res = await route(request, env, ctx, url);
+    applySecurityHeaders(res, url);
+    return res;
+  } catch (e) {
+    if (e instanceof ApiError) {
+      return json({ error: e.message }, e.status);
+    }
+    console.error("未处理的异常:", e);
+    return json({ error: "服务器内部错误" }, 500);
+  }
+}
+
+/** 给响应加上安全头。 */
+export function applySecurityHeaders(res: Response, url: URL): void {
+  // HSTS 只在 HTTPS 下发 —— http 下发会让浏览器直接拒绝访问
+  for (const [k, v] of Object.entries(hstsHeader(url))) {
+    res.headers.set(k, v);
+  }
+  res.headers.set("X-Content-Type-Options", "nosniff");
+  res.headers.set("X-Frame-Options", "DENY");
+  res.headers.set("Referrer-Policy", "no-referrer");
+}
 
 export function json(data: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return new Response(JSON.stringify(data), {
@@ -87,7 +119,7 @@ export function json(data: unknown, status = 200, headers: Record<string, string
  *   强制浏览器以后只用 HTTPS 访问。**只在 HTTPS 下发** ——
  *   在 http 上发这个头，浏览器会拒绝访问你的站点。
  */
-function securityHeaders(): Record<string, string> {
+export function securityHeaders(): Record<string, string> {
   return {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",

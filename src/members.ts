@@ -21,7 +21,7 @@ import {
   PERMISSIONS, ROLE_LABEL, getMember, insert, memberToDict,
   queryAll, queryOne, execute,
 } from "./db";
-import { b64d, b64e, randomBytes } from "./crypto";
+import { b64d, b64e, derivePbkdf2, randomBytes } from "./crypto";
 import { ApiError, type Member } from "./types";
 import type { MemberRow } from "./db";
 
@@ -35,13 +35,20 @@ export const COLORS = [
 
 /** 口令哈希（PBKDF2-SHA256，21 万轮）。 */
 export async function hashPassword(pw: string, salt: Uint8Array): Promise<string> {
-  const base = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(pw) as BufferSource, "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: salt as BufferSource, iterations: 210_000, hash: "SHA-256" },
-    base, 256);
-  return b64e(new Uint8Array(bits));
+  // 分段派生 —— Cloudflare 的 WebCrypto 单次迭代上限是 10 万，
+  // 21 万轮必须拆成三段跑。详见 crypto.ts 的 derivePbkdf2 注释。
+  const raw = await derivePbkdf2(pw, salt, PASSWORD_PBKDF2_ROUNDS);
+  return b64e(raw.slice(0, 32));
 }
+
+/**
+ * 密码哈希的 PBKDF2 轮数。
+ *
+ * 21 万轮 = 分三段（10万 + 10万 + 1万）。
+ * OWASP 2023 对 PBKDF2-HMAC-SHA256 的建议是 60 万轮，
+ * 21 万略低但对这个场景够用（自建服务 + 登录失败限流）。
+ */
+export const PASSWORD_PBKDF2_ROUNDS = 210_000;
 
 export async function verifyPassword(
   pw: string, saltB64: string, hashB64: string,

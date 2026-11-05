@@ -20,6 +20,24 @@ import { ApiError, type Env } from "./types";
 import { sha256hex } from "./crypto";
 
 /** R2 key：两字符前缀分桶，key = <hash>。 */
+/**
+ * 确保 R2 可用。
+ *
+ * 账号没订阅 R2 时 binding 根本不存在（部署都过不去），
+ * 或者桶被误删、配额爆了 —— 这时给用户一句明确的话，
+ * 而不是让代码在 `blob.get()` 上抛 "Cannot read properties of undefined"。
+ */
+export function needBlob(env: Env): R2Bucket {
+  if (!env.BLOB) {
+    throw new ApiError(
+      "文件存储还没启用。请在 Cloudflare 控制台启用 R2（Workers & Pages → R2），" +
+      "然后重新部署。",
+      503,
+    );
+  }
+  return env.BLOB;
+}
+
 export function blobKey(hash: string): string {
   return hash.length >= 2 ? `${hash.slice(0, 2)}/${hash}` : hash;
 }
@@ -45,6 +63,7 @@ export interface PutResult {
 export async function putBytes(
   env: Env, data: Uint8Array, existingBlobId: number | null = null,
 ): Promise<PutResult> {
+  const blob = needBlob(env);
   const hash = await sha256hex(data);
   const size = data.byteLength;
 
@@ -61,7 +80,7 @@ export async function putBytes(
   }
 
   // 写 R2
-  await env.BLOB.put(blobKey(hash), data as BufferSource, {
+  await blob.put(blobKey(hash), data as BufferSource, {
     httpMetadata: { contentType: "application/octet-stream" },
   });
 
@@ -88,6 +107,7 @@ export async function putBytes(
 export async function storeChunk(
   env: Env, data: Uint8Array,
 ): Promise<{ hash: string; size: number; blobId: number; deduped: boolean }> {
+  const blob = needBlob(env);
   const hash = await sha256hex(data);
   const size = data.byteLength;
 
@@ -96,7 +116,7 @@ export async function storeChunk(
     return { hash, size, blobId: row.id, deduped: true };
   }
 
-  await env.BLOB.put(blobKey(hash), data as BufferSource, {
+  await blob.put(blobKey(hash), data as BufferSource, {
     httpMetadata: { contentType: "application/octet-stream" },
   });
   const res = await env.DB.prepare(
@@ -116,7 +136,8 @@ export async function bumpRef(db: D1Database, blobId: number, delta: number): Pr
 export async function readBlob(
   env: Env, hash: string, offset = 0, length?: number,
 ): Promise<Uint8Array> {
-  const obj = await env.BLOB.get(blobKey(hash), {
+  const blob = needBlob(env);
+  const obj = await blob.get(blobKey(hash), {
     range: length !== undefined
       ? { offset, length }
       : (offset > 0 ? { offset } : undefined),
@@ -132,7 +153,8 @@ export async function readBlob(
 export async function streamBlob(
   env: Env, hash: string, offset = 0, length?: number,
 ): Promise<R2ObjectBody | null> {
-  return await env.BLOB.get(blobKey(hash), {
+  const blob = needBlob(env);
+  return await blob.get(blobKey(hash), {
     range: length !== undefined
       ? { offset, length }
       : (offset > 0 ? { offset } : undefined),
@@ -141,12 +163,14 @@ export async function streamBlob(
 
 /** 块是否存在。 */
 export async function blobExists(env: Env, hash: string): Promise<boolean> {
-  return await env.BLOB.head(blobKey(hash)) !== null;
+  const blob = needBlob(env);
+  return await blob.head(blobKey(hash)) !== null;
 }
 
 /** 删块（R2 + D1 两边）。 */
 export async function deleteBlob(env: Env, hash: string, blobId: number): Promise<void> {
-  await env.BLOB.delete(blobKey(hash));
+  const blob = needBlob(env);
+  await blob.delete(blobKey(hash));
   await env.DB.prepare("DELETE FROM blobs WHERE id=?").bind(blobId).run();
 }
 
@@ -155,6 +179,7 @@ export async function deleteBlob(env: Env, hash: string, blobId: number): Promis
  * Python 版是扫本地目录，这里是查 D1 找 refcount=0 的记录。
  */
 export async function gc(env: Env, limit = 500): Promise<{ purged: number; freed: number }> {
+  const blob = needBlob(env);
   const rows = await env.DB.prepare(
     "SELECT id, hash, size FROM blobs WHERE refcount <= 0 LIMIT ?").bind(limit).all<{
       id: number; hash: string; size: number;
@@ -162,7 +187,7 @@ export async function gc(env: Env, limit = 500): Promise<{ purged: number; freed
   const list = rows.results ?? [];
   let freed = 0;
   for (const b of list) {
-    await env.BLOB.delete(blobKey(b.hash));
+    await blob.delete(blobKey(b.hash));
     await env.DB.prepare("DELETE FROM blobs WHERE id=?").bind(b.id).run();
     freed += b.size;
   }
@@ -249,14 +274,16 @@ export async function storageStats(env: Env): Promise<{
 export async function putStaging(
   env: Env, uploadId: string, seq: number, data: Uint8Array,
 ): Promise<void> {
-  await env.BLOB.put(stagingKey(uploadId, seq), data as BufferSource);
+  const blob = needBlob(env);
+  await blob.put(stagingKey(uploadId, seq), data as BufferSource);
 }
 
 /** 读暂存分片。 */
 export async function getStaging(
   env: Env, uploadId: string, seq: number,
 ): Promise<Uint8Array | null> {
-  const obj = await env.BLOB.get(stagingKey(uploadId, seq));
+  const blob = needBlob(env);
+  const obj = await blob.get(stagingKey(uploadId, seq));
   if (!obj) return null;
   return new Uint8Array(await obj.arrayBuffer());
 }
@@ -265,10 +292,11 @@ export async function getStaging(
 export async function listStaging(
   env: Env, uploadId: string,
 ): Promise<{ seq: number; size: number }[]> {
+  const blob = needBlob(env);
   const out: { seq: number; size: number }[] = [];
   let cursor: R2ListOptions["cursor"] | undefined = undefined;
   do {
-    const page = await env.BLOB.list({ prefix: `staging/${uploadId}/`, cursor, limit: 1000 });
+    const page = await blob.list({ prefix: `staging/${uploadId}/`, cursor, limit: 1000 });
     for (const o of page.objects) {
       const m = o.key.match(/\/(\d+)$/);
       if (m) out.push({ seq: Number(m[1]), size: o.size });
@@ -280,11 +308,12 @@ export async function listStaging(
 
 /** 清掉一个上传会话的所有暂存分片。 */
 export async function clearStaging(env: Env, uploadId: string): Promise<void> {
+  const blob = needBlob(env);
   let cursor: R2ListOptions["cursor"] | undefined = undefined;
   do {
-    const page = await env.BLOB.list({ prefix: `staging/${uploadId}/`, cursor, limit: 1000 });
+    const page = await blob.list({ prefix: `staging/${uploadId}/`, cursor, limit: 1000 });
     if (page.objects.length) {
-      await env.BLOB.delete(page.objects.map((o) => o.key));
+      await blob.delete(page.objects.map((o) => o.key));
     }
     cursor = page.truncated ? page.cursor : undefined;
   } while (cursor);

@@ -36,8 +36,21 @@ def wrangler(args, **kw):
 def start(port):
     log = open(os.path.join(ROOT, "_wrangler.log"), "w", encoding="utf-8")
     return subprocess.Popen(
-        [NODE, WRANGLER, "dev", "--port", str(port), "--local",
-         "--persist-to=.wrangler/state", "--ip", "127.0.0.1", "--log-level", "log"],
+        # ⚠️ 现在主站是 Pages 宿主，必须用 `wrangler pages dev`（不是 `wrangler dev`）。
+        #    用错会报 "It looks like you've run a Workers-specific command in a Pages project"。
+        #    pages dev 会读 functions/ 目录（我们的 functions/api/[[path]].ts）。
+        # ⚠️ bindings 要显式传 —— `wrangler pages dev` 不读 wrangler.jsonc 里的
+        #    d1_databases / r2_buckets / kv_namespaces（Pages 的 binding 在控制台配，
+        #    本地模拟就得用命令行参数）。
+        #    R2 用的是本地模拟桶（miniflare 自带，不碰线上）。
+        [NODE, WRANGLER, "pages", "dev", "web", "--port", str(port),
+         "--persist-to=.wrangler/state",
+         #    ⚠️ D1/KV 必须给**完整的 id**，不能只给名字 ——
+         #    简写形式（DB=fcloud）miniflare 会按名字另建一个空库，
+         #    结果就是 "no such table: settings"。
+         "--d1", "DB=c2682976-5bc1-4fbe-b66b-99c3abfa6d7d",
+         "--kv", "RATE=91810afa662844268df883873fed6646",
+         "--r2", "BLOB=fcloud-blobs"],
         cwd=ROOT, stdout=log, stderr=subprocess.STDOUT)
 
 
@@ -417,6 +430,13 @@ def test_members_sharing(base, cookie):
     # 儿童登录
     st, data, hdrs = post(base, "/api/login", {"username": "kid", "password": "kid1234"})
     check(st == 200, "儿童登录成功", data)
+    # 回归测试：members.ts 建的成员必须能用 auth.ts 的登录接口登录。
+    # 之前 auth.ts 和 members.ts 各有一份 hashPassword（算法不同），
+    # 于是「这里建的号在那边登录不了」—— 本地测试发现不了，
+    # 因为 setup 和 login 都在 auth.ts（自洽），且 miniflare 不限迭代次数。
+    # 到线上才炸：Cloudflare 限制 PBKDF2 单次 ≤10 万轮。
+    check(st == 200 and data.get("me", {}).get("username") == "kid",
+          "跨模块建号后能登录（回归）", data)
     kid_cookie = hdrs.get("Set-Cookie", "").split(";")[0]
     kid_can = data.get("me", {}).get("can", [])
     check("create_folder" in kid_can, "儿童也能建文件夹", kid_can)

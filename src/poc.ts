@@ -17,11 +17,11 @@
 
 import { json } from "./index";
 import {
-  chunkSalt, decryptChunk, derive, encryptChunk, hmacSha256,
-  MasterKey, randomBytes, sha256hex,
-} from "./crypto";
+  chunkSalt, decryptChunk, derive, derivePbkdf2, encryptChunk, hmacSha256,
+  MasterKey, randomBytes, sha256hex, b64e } from "./crypto";
 import { putBytes, readBlob } from "./storage";
 import { execute, queryOne } from "./db";
+import { hashPassword, verifyPassword } from "./members";
 import type { Env } from "./types";
 
 export async function poc(_req: Request, env: Env): Promise<Response> {
@@ -99,6 +99,63 @@ export async function poc(_req: Request, env: Env): Promise<Response> {
       ok: differ,
       ms: +(performance.now() - a).toFixed(2),
     });
+  }
+
+  // ---- 5.5 分段 PBKDF2（Cloudflare 单次上限 10 万轮）----
+  {
+    const pw = "test-password";
+    const salt = randomBytes(16);
+    const t0 = performance.now();
+    const seg = await derivePbkdf2(pw, salt, 210_000);
+    const segMs = performance.now() - t0;
+    // 单次 10 万轮（不超上限）
+    const base = await crypto.subtle.importKey(
+      "raw", new TextEncoder().encode(pw) as BufferSource, "PBKDF2", false, ["deriveBits"]);
+    const single = new Uint8Array(await crypto.subtle.deriveBits(
+      { name: "PBKDF2", salt: salt as BufferSource, iterations: 100_000, hash: "SHA-256" },
+      base, 256));
+    // 21 万轮 = 10万 + 10万 + 1万 = 3 段，每段 32 字节 → 96 字节
+    const expectSegs = Math.ceil(210_000 / 100_000);
+    steps.push({
+      step: "pbkdf2_segmented",
+      ok: seg.length === expectSegs * 32 && seg.length !== single.length,
+      ms: +segMs.toFixed(2),
+    });
+    // 确定性：同样的输入必须给同样的输出
+    const again = await derivePbkdf2(pw, salt, 210_000);
+    let same = again.length === seg.length;
+    for (let i = 0; same && i < seg.length; i++) same = seg[i] === again[i];
+    steps.push({ step: "pbkdf2_deterministic", ok: same, ms: 0 });
+    // 不同 salt 必须给不同结果
+    const other = await derivePbkdf2(pw, randomBytes(16), 210_000);
+    let diff = false;
+    for (let i = 0; i < seg.length && !diff; i++) diff = seg[i] !== other[i];
+    steps.push({ step: "pbkdf2_salt_matters", ok: diff, ms: 0 });
+  }
+
+  // ---- 5.6 密码哈希自检（分段派生后）----
+  {
+    const pw = "kid1234";
+    const salt = randomBytes(16);
+    const h1 = await hashPassword(pw, salt);
+    const h2 = await hashPassword(pw, salt);
+    const h3 = await hashPassword("wrong", salt);
+    steps.push({
+      step: "密码哈希确定性",
+      ok: h1 === h2 && h1 !== h3,
+      ms: 0,
+    });
+    // 完整走一遍 verifyPassword（用 b64e/b64d 往返）
+    const saltB64 = b64e(salt);
+    const hashB64 = h1;
+    const okReal = await verifyPassword(pw, saltB64, hashB64);
+    const okWrong = await verifyPassword("wrong", saltB64, hashB64);
+    steps.push({
+      step: "verifyPassword 往返",
+      ok: okReal && !okWrong,
+      ms: 0,
+    });
+    console.log("    哈希长度:", h1.length, "| saltB64:", saltB64);
   }
 
   // ---- 6. R2 + D1 往返（假设 2）----

@@ -1,38 +1,52 @@
 {
   "$schema": "node_modules/wrangler/config-schema.json",
   "name": "fcloud",
-  "main": "src/index.ts",
   "compatibility_date": "2026-01-15",
   "compatibility_flags": ["nodejs_compat"],
 
-  "assets": {
-    "directory": "./web",
-    "binding": "ASSETS",
-    "not_found_handling": "single-page-application"
-  },
+  // ---------------------------------------------------------------
+  // 主站用 Pages，不用 Workers。
+  //
+  // 原因：**workers.dev 在国内被 DNS 污染** ——
+  //   fcloud.fcloud-kaixin.workers.dev → 31.13.86.21（Facebook 的 IP）
+  // 而 pages.dev 干净：
+  //   pages.dev → 104.18.21.135（Cloudflare 自己的 IP）
+  // 实测同一个网络下 pages.dev 通、workers.dev 不通。
+  //
+  // Pages 静态资源直接托管（不过函数，不计函数调用配额），
+  // /api/* 走 functions/api/[[path]].ts → src/ 里的同一套路由。
+  //
+  // 旧配置（Worker 版）备份在 git 历史里，需要回退时 git checkout 即可。
+  // ---------------------------------------------------------------
+
+  "pages_build_output_dir": "./web",
 
   "d1_databases": [
     {
       "binding": "DB",
       "database_name": "fcloud",
-      "database_id": "00000000-0000-0000-0000-000000000000",
+      "database_id": "c2682976-5bc1-4fbe-b66b-99c3abfa6d7d",
       "migrations_dir": "migrations"
-    }
-  ],
-
-  "r2_buckets": [
-    {
-      "binding": "BLOB",
-      "bucket_name": "fcloud-blobs"
     }
   ],
 
   "kv_namespaces": [
     {
       "binding": "RATE",
-      "id": "0000000000000000000000000000000f"
+      "id": "91810afa662844268df883873fed6646"
     }
   ],
+
+  // ⚠️ R2 暂时注释掉 —— 账号还没订阅 R2（Cloudflare 错误 10042），
+  //    引用一个不存在的桶会让部署直接失败。
+  //    在控制台启用 R2 之后，把下面这段取消注释即可。
+  //
+  // "r2_buckets": [
+  //   {
+  //     "binding": "BLOB",
+  //     "bucket_name": "fcloud-blobs"
+  //   }
+  // ],
 
   "vars": {
     "APP_NAME": "Family Cloud",
@@ -41,9 +55,10 @@
     "CHUNK_SIZE": "4194304"
   },
 
-  "triggers": {
-    "crons": ["0 4 * * *"]
-  },
+  // ⚠️ Pages 的 wrangler 配置**不支持** triggers（cron）。
+  //    定时任务（回收站清理 + 内容块 GC）要在控制台配：
+  //      Pages → fcloud → Settings → Functions → Cron Triggers
+  //    表达式：0 4 * * *（每天凌晨 4 点）
 
   "observability": {
     "enabled": true

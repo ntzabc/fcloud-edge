@@ -18,6 +18,7 @@ import { jsonBody, need } from "../http";
 import { require } from "../members";
 import { log } from "../sharing";
 import { getSetting, queryAll, setSetting } from "../db";
+import { needBlob } from "../storage";
 import { ApiError, type Env } from "../types";
 import type { Ctx } from "../http";
 
@@ -46,6 +47,7 @@ function backupKey(name: string): string {
 }
 
 export async function backupNow(ctx: Ctx): Promise<Response> {
+  const blob = needBlob(ctx.env);
   const m = await need(ctx);
   require(m, "run_backup");
   const d = await jsonBody<{ note?: string }>(ctx.req);
@@ -76,7 +78,7 @@ export async function backupNow(ctx: Ctx): Promise<Response> {
     tables: dump,
   });
 
-  await ctx.env.BLOB.put(backupKey(name), payload, {
+  await blob.put(backupKey(name), payload, {
     httpMetadata: { contentType: "application/json" },
   });
   await setSetting(ctx.env.DB, "last_backup_at", String(Date.now() / 1000));
@@ -87,12 +89,13 @@ export async function backupNow(ctx: Ctx): Promise<Response> {
 }
 
 export async function backupList(ctx: Ctx): Promise<Response> {
+  const blob = needBlob(ctx.env);
   await need(ctx);
   require(ctx.member!, "run_backup");
   const items: { name: string; size: number; uploaded: string }[] = [];
   let cursor: R2ListOptions["cursor"] | undefined = undefined;
   do {
-    const page = await ctx.env.BLOB.list({ prefix: "backups/", cursor, limit: 1000 });
+    const page = await blob.list({ prefix: "backups/", cursor, limit: 1000 });
     for (const o of page.objects) {
       items.push({
         name: o.key.replace(/^backups\//, ""),
@@ -107,12 +110,13 @@ export async function backupList(ctx: Ctx): Promise<Response> {
 }
 
 export async function backupRestore(ctx: Ctx): Promise<Response> {
+  const blob = needBlob(ctx.env);
   const m = await need(ctx);
   require(m, "run_backup");
   const d = await jsonBody<{ name?: string }>(ctx.req);
   const name = (d.name || "").replace(/[^A-Za-z0-9._-]/g, "");
   if (!name) throw new ApiError("没指定要恢复哪个备份");
-  const obj = await ctx.env.BLOB.get(backupKey(name));
+  const obj = await blob.get(backupKey(name));
   if (!obj) throw new ApiError("找不到这个备份文件", 404);
 
   let payload: { tables?: Record<string, Record<string, unknown>[]> };

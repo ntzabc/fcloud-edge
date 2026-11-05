@@ -5,6 +5,7 @@
  */
 
 import { json } from "../index";
+import { hashPassword, verifyPassword } from "../members";
 import { logSecurity } from "../security";
 import {
   clearCookie, cookie, isSecureCtx, jsonBody, need, sessionCookie,
@@ -13,39 +14,25 @@ import {
   createSession, deleteSession, getMemberByName, getSetting,
   insert, listMembers, memberToDict, queryOne,
 } from "../db";
-import { b64d, b64e, randomBytes } from "../crypto";
+import { b64e, randomBytes } from "../crypto";
 import { ApiError } from "../types";
 import type { Ctx } from "../http";
 import type { Env } from "../types";
 
 const SPACE_ID = 1;
 
-/** 口令哈希参数。WebCrypto 只有 PBKDF2，用 21 万轮。 */
-const PBKDF2_ROUNDS = 210_000;
-
-/** 密码哈希。 */
-export async function hashPassword(pw: string, salt: Uint8Array): Promise<string> {
-  const base = await crypto.subtle.importKey(
-    "raw", new TextEncoder().encode(pw) as BufferSource, "PBKDF2", false, ["deriveBits"]);
-  const bits = await crypto.subtle.deriveBits(
-    { name: "PBKDF2", salt: salt as BufferSource, iterations: PBKDF2_ROUNDS, hash: "SHA-256" },
-    base, 256);
-  return b64e(new Uint8Array(bits));
-}
-
-export async function verifyPassword(
-  pw: string, saltB64: string, hashB64: string,
-): Promise<boolean> {
-  const salt = b64d(saltB64);
-  const got = await hashPassword(pw, salt);
-  // 常量时间比较
-  const a = new TextEncoder().encode(got);
-  const b = new TextEncoder().encode(hashB64);
-  if (a.length !== b.length) return false;
-  let diff = 0;
-  for (let i = 0; i < a.length; i++) diff |= a[i] ^ b[i];
-  return diff === 0;
-}
+// ⚠️ 密码哈希只有**一份**实现，在 members.ts 里（hashPassword / verifyPassword）。
+//
+// 这里曾经有一份重复实现 —— 结果是「建号用一套算法、验证用另一套」，
+// 于是 members.ts 建的成员永远登录不了。
+//
+// 为什么本地测试没发现：
+//   1. setup 和 login 都在 auth.ts，用的是同一份 → 自洽，看不出问题
+//   2. miniflare 不限制 PBKDF2 迭代次数 → 两份都能跑完
+//   3. 两份算法输出长度一样（都是 32 字节 base64）→ 长度检查也发现不了
+//
+// 到线上才炸：Cloudflare 的 WebCrypto 限制单次迭代 ≤ 10 万，
+// auth.ts 那份直接 NotSupportedError → 500。
 
 /** 空间是否已经初始化过。 */
 export async function isInitialized(db: D1Database): Promise<boolean> {
