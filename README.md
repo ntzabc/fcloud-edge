@@ -149,7 +149,7 @@ python setup_cloudflare.py --dry                    # 先看它要做什么
 ```
 
 脚本会：建 D1 / R2 / KV → 把 id 写回 `wrangler.jsonc` → 生成并设置
-`MASTER_SECRET` → 应用两个迁移 → 部署 → 打印网址。
+`MASTER_SECRET` → 应用两个迁移 → 建 Pages 项目 → 部署 → 打印网址。
 
 **手动做的话**：
 
@@ -176,7 +176,18 @@ node node_modules/wrangler/bin/wrangler.js d1 execute fcloud \
 node node_modules/wrangler/bin/wrangler.js deploy
 ```
 
-部署后拿到 `https://fcloud.<你的子域>.workers.dev`。
+部署后拿到 **https://fcloud.pages.dev**。
+
+> ⚠️ **为什么不用 workers.dev？**
+> `*.workers.dev` 在国内被 **DNS 污染** —— 会解析到 Facebook 的 IP（31.13.x.x），
+> 根本连不上。实测同一个网络下：
+>
+> | 域名 | 解析结果 | 可达 |
+> |---|---|---|
+> | `fcloud.fcloud-kaixin.workers.dev` | 31.13.86.21（Facebook） | ❌ |
+> | `fcloud.pages.dev` | 104.18.21.135（Cloudflare） | ✅ |
+>
+> 所以主站跑在 **Pages** 上。想更快更稳的话，绑一个自己的域名（Pages 项目里绑）。
 
 ### 二、GitHub 自动部署
 
@@ -209,6 +220,19 @@ Cloudflare 侧，不进仓库、不进 CI 日志。
 1. 打开 `https://fcloud.xxx.workers.dev`
 2. 建管理员账号（这一步只有一次机会，初始化后 `/api/setup` 就关了）
 3. 在 iPad 的 Safari 里打开 → 分享 → **添加到主屏幕** → 全屏 App
+
+### R2 需要手动启用（一步）
+
+Cloudflare 的 R2 **必须在控制台点一次启用**，API 调不了：
+
+1. 打开 https://dash.cloudflare.com → 左侧 **Workers & Pages** → **R2**
+2. 点「Enable R2」或「Purchase R2」
+3. 按提示添加支付方式（信用卡或 PayPal）—— **免费额度内不会扣费**
+   （10GB 存储 + 出口流量免费）
+4. 启用后把 `wrangler.jsonc` 里 `r2_buckets` 那段取消注释，重新部署
+
+没启用时：站点照常能用（管理、账号、加密、小f 都正常），
+只是**上传/下载文件会返回 503** 并提示「文件存储还没启用」。
 
 ---
 

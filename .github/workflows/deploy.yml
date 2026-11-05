@@ -1,4 +1,4 @@
-name: 部署到 Cloudflare Workers
+name: 部署到 Cloudflare Pages
 
 # 触发时机：
 #   - 推 main 分支 → 自动部署
@@ -6,10 +6,14 @@ name: 部署到 Cloudflare Workers
 #
 # 需要的仓库 Secret（Settings → Secrets and variables → Actions）：
 #   CLOUDFLARE_ACCOUNT_ID  Cloudflare 账号 ID
-#   CLOUDFLARE_API_TOKEN   API Token（Workers Scripts 模板，权限见 README）
+#   CLOUDFLARE_API_TOKEN   API Token（权限见 README）
 #
-# ⚠️ MASTER_SECRET 和 OPENROUTER_API_KEY **不要**放这里 ——
-#    它们用 `wrangler secret put` 存在 Cloudflare 侧，不进仓库。
+# ⚠️ MASTER_SECRET 和 FCLOUD_AI_KEY **不要**放这里 ——
+#    它们用 `wrangler pages secret bulk` 存在 Cloudflare 侧，不进仓库、不进 CI 日志。
+#
+# 为什么是 Pages 不是 Workers：
+#   **workers.dev 在国内被 DNS 污染**（解析到 Facebook 的 IP，根本连不上），
+#   而 pages.dev 干净。所以主站必须跑在 Pages 上。
 
 on:
   push:
@@ -43,23 +47,25 @@ jobs:
       - name: 类型检查
         run: npx tsc --noEmit
 
-      # ⚠️ 单元测试需要 wrangler dev 起本地服务，
-      # 在 CI 里容易因为端口/时序不稳定而误报失败。
-      # 所以 CI 只做类型检查，完整端到端测试在本地跑（见 README）。
-      # 想在 CI 也跑的话：npm test
+      # ⚠️ 完整端到端测试需要起本地服务，CI 里容易因端口/时序不稳定而误报失败。
+      #    所以 CI 只做类型检查，完整测试在本地跑（python _run_poc.py）。
 
-      - name: 部署
+      # ⚠️ 必须清 Pages 的构建缓存 ——
+      #    它**不跟踪 src/ 的变化**：改了 src/crypto.ts 但缓存没清，
+      #    部署上去的还是旧代码（这个坑排查了很久）。
+      - name: 清 Pages 构建缓存
+        run: rm -rf .wrangler/tmp/pages-*
+
+      - name: 部署到 Pages
         uses: cloudflare/wrangler-action@v3
         with:
           apiToken: ${{ secrets.CLOUDFLARE_API_TOKEN }}
           accountId: ${{ secrets.CLOUDFLARE_ACCOUNT_ID }}
-          # wrangler.jsonc 里已经配好了 D1 / R2 / KV 的 binding，
-          # 这里只部署 Worker 代码 + 静态资源。
-          command: deploy
-          # D1 迁移单独一步，不跟部署混在一起 ——
-          # 迁移失败要让部署失败，不能「部署成功但表没建」。
-          # 见下面的「应用数据库迁移」步骤。
+          # 静态资源是 web/ 目录，API 走 functions/api/[[path]].ts
+          command: pages deploy web --project-name=fcloud
 
+      # D1 迁移单独一步，不跟部署混在一起 ——
+      # 迁移失败要让部署失败，不能「部署成功但表没建」。
       - name: 应用数据库迁移
         uses: cloudflare/wrangler-action@v3
         with:
